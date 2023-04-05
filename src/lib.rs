@@ -46,6 +46,60 @@ lazy_static! {
     };
 }
 
+
+
+fn create_ethernet_frame(
+    data: Vec<u8>,
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    src_port: u16,
+    dst_ip: Ipv4Addr,
+    dst_port: u16,
+) -> Vec<u8> {
+    let mut frame = Vec::new();
+    // Ethernet header
+    frame.extend_from_slice(&dst_mac);
+    frame.extend_from_slice(&src_mac);
+    frame.extend_from_slice(&[0x08, 0x00]); // EtherType (IPv4)
+    // IP header
+    frame.push(0x45); // version and header length
+    frame.push(0); // type of service
+    let total_length = (data.len() + 28) as u16;
+    frame.extend_from_slice(&total_length.to_be_bytes()); // total length
+    frame.extend_from_slice(&0u16.to_be_bytes()); // identification
+    frame.extend_from_slice(&0u16.to_be_bytes()); // flags and fragment offset
+    frame.push(64); // time to live
+    frame.push(17); // protocol (UDP)
+    frame.extend_from_slice(&0u16.to_be_bytes()); // checksum (will be calculated later)
+    frame.extend_from_slice(&src_ip.octets());
+    frame.extend_from_slice(&dst_ip.octets());
+    // UDP header
+    frame.extend_from_slice(&src_port.to_be_bytes());
+    frame.extend_from_slice(&dst_port.to_be_bytes());
+    let length = (data.len() + 8) as u16;
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes()); // checksum
+    // data
+    frame.extend(data);
+    // calculate IP checksum
+    let checksum = ip_checksum(&frame[14..34]);
+    frame[24..26].copy_from_slice(&checksum.to_be_bytes());
+    frame
+}
+
+fn ip_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for word in header.chunks(2) {
+        let word = u16::from_be_bytes([word[0], word[1]]);
+        sum = sum.wrapping_add(word as u32);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !sum as u16
+}
+
 fn get_peer_addr(fd: i32) -> Option<SocketAddrV4> {
     let mut addr: libc::sockaddr_in = unsafe { mem::zeroed() };
     let mut len = std::mem::size_of_val(&addr) as u32;
@@ -85,11 +139,21 @@ fn get_sock_name(fd: i32) -> Option<SocketAddrV4> {
 }
 
 fn write_message(m: Message) {
+    println!("Message len: {}", m.data.len());
     if let Some(Ok(mut file)) = PCAP_LOG_FILE.as_ref().and_then(|f| Some(f.lock())) {
+        let udp = create_ethernet_frame(
+            m.data,
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            *m.source_addr.unwrap().ip(),
+            m.source_addr.unwrap().port(),
+            *m.dest_addr.unwrap().ip(),
+            m.dest_addr.unwrap().port(),
+        );
         let p = PcapPacket {
             timestamp: START.elapsed(),
-            orig_len: m.data.len().try_into().unwrap(),
-            data: m.data.into(),
+            orig_len: udp.len().try_into().unwrap(),
+            data: udp.into(),
         };
         file.write_packet(&p).expect("Error writing packet");
     }
@@ -99,9 +163,15 @@ fn write_message(m: Message) {
 pub unsafe extern "C" fn recv(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    //println!("====recv({source_addr:?}, {dest_addr:?})====");
+    println!("====recv({:?}, {:?})====", source_addr, dest_addr);
     let res = REAL_RECV(fd, buf, n, flags);
-    let slice = std::slice::from_raw_parts(buf as *const u8, n as usize);
+
+    if res <= 0 {
+        return res;
+    }
+
+    let slice = std::slice::from_raw_parts(buf as *const u8, res as usize);
+
     let message = Message {
         data: slice.to_vec(),
         source_addr: source_addr,
@@ -116,8 +186,11 @@ pub unsafe extern "C" fn recv(fd: c_int, buf: *const c_void, n: size_t, flags: c
 pub unsafe extern "C" fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    //println!("====send({source_addr:?} -> {dest_addr:?})====");
+    println!("====send({:?} -> {:?})====", source_addr, dest_addr);
     let res = REAL_SEND(fd, buf, n, flags);
+    if res <= 0 {
+        return res;
+    }
     let slice = std::slice::from_raw_parts(buf as *const u8, n as usize);
     let message = Message {
         data: slice.to_vec(),
