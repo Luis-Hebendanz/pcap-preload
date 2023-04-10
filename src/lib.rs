@@ -296,3 +296,132 @@ pub unsafe extern "C" fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c
     write_message(message);
     total_res as isize
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn sendto(
+    fd: c_int,
+    buf: *const c_void,
+    n: size_t,
+    flags: c_int,
+    addr: *const libc::sockaddr,
+    addr_len: socklen_t,
+) -> isize {
+    let source_addr = get_peer_addr(fd);
+    let dest_addr = get_sock_name(fd);
+    println!("====sendto source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    let mut total_res: usize = 0;
+
+    while total_res < n {
+        let res = REAL_SENDTO(fd, buf, n, flags, addr, addr_len);
+        if res <= 0 {
+            return res;
+        }
+        total_res += res as usize;
+    }
+
+    let slice = std::slice::from_raw_parts(buf as *const u8, n);
+    let message = Message {
+        data: slice.to_vec(),
+        source_addr,
+        dest_addr
+    };
+    write_message(message);
+    total_res as isize
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn sendmsg(
+    fd: c_int,
+    msg: *const libc::msghdr,
+    flags: c_int,
+) -> isize {
+    let source_addr = get_peer_addr(fd);
+    let dest_addr = get_sock_name(fd);
+    println!("====sendmsg source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    let mut total_res: usize = 0;
+
+    let msg = &*msg;
+    let slice = std::slice::from_raw_parts(msg.msg_iov as *const libc::iovec, msg.msg_iovlen);
+    let mut data = Vec::new();
+    for iovec in slice {
+        let slice = std::slice::from_raw_parts(iovec.iov_base as *const u8, iovec.iov_len);
+        data.extend_from_slice(slice);
+    }
+
+    while total_res < data.len() {
+        let res = REAL_SENDMSG(fd, msg, flags);
+        if res <= 0 {
+            return res;
+        }
+        total_res += res as usize;
+    }
+
+    let message = Message {
+        data,
+        source_addr,
+        dest_addr
+    };
+    write_message(message);
+    total_res as isize
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn recvfrom(
+    fd: c_int,
+    buf: *mut c_void,
+    n: size_t,
+    flags: c_int,
+    addr: *mut libc::sockaddr,
+    addr_len: *mut socklen_t,
+) -> isize {
+    let source_addr = get_peer_addr(fd);
+    let dest_addr = get_sock_name(fd);
+    println!("====recvfrom source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    let res = REAL_RECVFROM(fd, buf, n, flags, addr, addr_len);
+
+    if res <= 0 {
+        return res;
+    }
+
+    let slice = std::slice::from_raw_parts(buf as *const u8, res as usize);
+
+    let message = Message {
+        data: slice.to_vec(),
+        source_addr,
+        dest_addr
+    };
+    write_message(message);
+    res
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn recvmsg(
+    fd: c_int,
+    msg: *mut libc::msghdr,
+    flags: c_int,
+) -> isize {
+    let source_addr = get_peer_addr(fd);
+    let dest_addr = get_sock_name(fd);
+    println!("====recvmsg source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    let res = REAL_RECVMSG(fd, msg, flags);
+
+    if res <= 0 {
+        return res;
+    }
+
+    let msg = &*msg;
+    let slice = std::slice::from_raw_parts(msg.msg_iov as *const libc::iovec, msg.msg_iovlen);
+    let mut data = Vec::new();
+    for iovec in slice {
+        let slice = std::slice::from_raw_parts(iovec.iov_base as *const u8, iovec.iov_len);
+        data.extend_from_slice(slice);
+    }
+
+    let message = Message {
+        data,
+        source_addr,
+        dest_addr
+    };
+    write_message(message);
+    res
+}

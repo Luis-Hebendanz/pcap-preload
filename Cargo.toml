@@ -14,4 +14,3 @@ pcap-file = { version = "2.0.0", default-features = false }
 [lib]
 name = "pcap_preload"
 crate_type = ["dylib"]
-libc = "0.2"
