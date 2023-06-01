@@ -1,7 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 use lazy_static::lazy_static;
 use libc::socklen_t;
-use libc::{c_int, c_void, size_t, ssize_t, sockaddr, msghdr};
+use libc::{c_int, c_void, msghdr, size_t, sockaddr, ssize_t};
 use pcap_file::pcap::PcapPacket;
 use pcap_file::pcap::PcapWriter;
 use std::env;
@@ -14,9 +14,8 @@ use std::time::Instant;
 struct Message {
     data: Vec<u8>,
     source_addr: Option<SocketAddrV4>,
-    dest_addr: Option<SocketAddrV4>
+    dest_addr: Option<SocketAddrV4>,
 }
-
 
 lazy_static! {
     static ref PCAP_LOG_FILE: Option<Mutex<PcapWriter<File>>> = {
@@ -39,8 +38,14 @@ lazy_static! {
             b"recv\0".as_ptr() as *const i8,
         ))
     };
-
-    static ref REAL_RECVFROM: extern "C" fn(socket: c_int, buf: *const c_void, len: size_t, flags: c_int, src_addr: *mut sockaddr, src_len: *mut socklen_t) -> ssize_t = unsafe {
+    static ref REAL_RECVFROM: extern "C" fn(
+        socket: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        src_addr: *mut sockaddr,
+        src_len: *mut socklen_t,
+    ) -> ssize_t = unsafe {
         std::mem::transmute(libc::dlsym(
             libc::RTLD_NEXT,
             b"recvfrom\0".as_ptr() as *const i8,
@@ -52,20 +57,25 @@ lazy_static! {
             b"recvmsg\0".as_ptr() as *const i8,
         ))
     };
-
     static ref REAL_SEND: extern "C" fn(socket: c_int, buf: *const c_void, len: size_t, flags: c_int) -> ssize_t = unsafe {
         std::mem::transmute(libc::dlsym(
             libc::RTLD_NEXT,
             b"send\0".as_ptr() as *const i8,
         ))
     };
-    static ref REAL_SENDTO: extern "C" fn(socket: c_int, buf: *const c_void, len: size_t, flags: c_int, dest_addr: *const sockaddr, dest_len: socklen_t) -> ssize_t = unsafe {
+    static ref REAL_SENDTO: extern "C" fn(
+        socket: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        dest_addr: *const sockaddr,
+        dest_len: socklen_t,
+    ) -> ssize_t = unsafe {
         std::mem::transmute(libc::dlsym(
             libc::RTLD_NEXT,
             b"sendto\0".as_ptr() as *const i8,
         ))
     };
-
     static ref REAL_SENDMSG: extern "C" fn(socket: c_int, msg: *const msghdr, flags: c_int) -> ssize_t = unsafe {
         std::mem::transmute(libc::dlsym(
             libc::RTLD_NEXT,
@@ -73,8 +83,6 @@ lazy_static! {
         ))
     };
 }
-
-
 
 // This function creates an Ethernet frame with an IPv4 header and a UDP header. The IP and UDP headers are calculated automatically.
 // The data parameter contains the data that should be sent in the Ethernet frame.
@@ -97,7 +105,7 @@ fn create_ethernet_frame(
     frame.extend_from_slice(&dst_mac);
     frame.extend_from_slice(&src_mac);
     frame.extend_from_slice(&[0x08, 0x00]); // EtherType (IPv4)
-    // IP header
+                                            // IP header
     frame.push(0x45); // version and header length
     frame.push(0); // type of service
     let total_length = (data.len() + 28) as u16;
@@ -115,7 +123,7 @@ fn create_ethernet_frame(
     let length = (data.len() + 8) as u16;
     frame.extend_from_slice(&length.to_be_bytes());
     frame.extend_from_slice(&0u16.to_be_bytes()); // checksum
-    // data
+                                                  // data
     frame.extend(data);
     // calculate IP checksum
     let checksum = ip_checksum(&frame[14..34]);
@@ -134,6 +142,7 @@ fn ip_checksum(header: &[u8]) -> u16 {
     }
     !sum as u16
 }
+
 
 // This function returns the address of the peer associated with a
 // socket descriptor. The socket descriptor is the value returned by
@@ -170,8 +179,6 @@ fn get_peer_addr(fd: i32) -> Option<SocketAddrV4> {
         None
     }
 }
-
-
 
 // This function returns the local address and port of a socket.
 //
@@ -246,7 +253,13 @@ fn write_message(m: Message) {
 pub unsafe extern "C" fn recv(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====recv source: {:?}, destination: {:?})====", source_addr, dest_addr);
+    println!(
+        "====recv source: {:?}, destination: {:?})====",
+        source_addr, dest_addr
+    );
+
+    // TODO: If TCP socket uses recvall from peer.c then one packets becomes two inside the pcap file
+    // Not sure if this can be fixed from within here
     let res = REAL_RECV(fd, buf, n, flags);
 
     if res <= 0 {
@@ -258,7 +271,7 @@ pub unsafe extern "C" fn recv(fd: c_int, buf: *const c_void, n: size_t, flags: c
     let message = Message {
         data: slice.to_vec(),
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     res
@@ -276,7 +289,10 @@ pub unsafe extern "C" fn recv(fd: c_int, buf: *const c_void, n: size_t, flags: c
 pub unsafe extern "C" fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====send source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    println!(
+        "====send source: {:?}, destination: {:?} ====",
+        source_addr, dest_addr
+    );
     let mut total_res: usize = 0;
 
     while total_res < n {
@@ -291,7 +307,7 @@ pub unsafe extern "C" fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c
     let message = Message {
         data: slice.to_vec(),
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     total_res as isize
@@ -308,7 +324,10 @@ pub unsafe extern "C" fn sendto(
 ) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====sendto source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    println!(
+        "====sendto source: {:?}, destination: {:?} ====",
+        source_addr, dest_addr
+    );
     let mut total_res: usize = 0;
 
     while total_res < n {
@@ -323,21 +342,20 @@ pub unsafe extern "C" fn sendto(
     let message = Message {
         data: slice.to_vec(),
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     total_res as isize
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn sendmsg(
-    fd: c_int,
-    msg: *const libc::msghdr,
-    flags: c_int,
-) -> isize {
+pub unsafe extern "C" fn sendmsg(fd: c_int, msg: *const libc::msghdr, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====sendmsg source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    println!(
+        "====sendmsg source: {:?}, destination: {:?} ====",
+        source_addr, dest_addr
+    );
     let mut total_res: usize = 0;
 
     let msg = &*msg;
@@ -359,7 +377,7 @@ pub unsafe extern "C" fn sendmsg(
     let message = Message {
         data,
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     total_res as isize
@@ -376,7 +394,10 @@ pub unsafe extern "C" fn recvfrom(
 ) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====recvfrom source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    println!(
+        "====recvfrom source: {:?}, destination: {:?} ====",
+        source_addr, dest_addr
+    );
     let res = REAL_RECVFROM(fd, buf, n, flags, addr, addr_len);
 
     if res <= 0 {
@@ -388,21 +409,20 @@ pub unsafe extern "C" fn recvfrom(
     let message = Message {
         data: slice.to_vec(),
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     res
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn recvmsg(
-    fd: c_int,
-    msg: *mut libc::msghdr,
-    flags: c_int,
-) -> isize {
+pub unsafe extern "C" fn recvmsg(fd: c_int, msg: *mut libc::msghdr, flags: c_int) -> isize {
     let source_addr = get_peer_addr(fd);
     let dest_addr = get_sock_name(fd);
-    println!("====recvmsg source: {:?}, destination: {:?} ====", source_addr, dest_addr);
+    println!(
+        "====recvmsg source: {:?}, destination: {:?} ====",
+        source_addr, dest_addr
+    );
     let res = REAL_RECVMSG(fd, msg, flags);
 
     if res <= 0 {
@@ -420,7 +440,7 @@ pub unsafe extern "C" fn recvmsg(
     let message = Message {
         data,
         source_addr,
-        dest_addr
+        dest_addr,
     };
     write_message(message);
     res
